@@ -107,7 +107,7 @@ public class HouseMesh : MonoBehaviour
                     }
 
                     GameObject go = Instantiate(prefab, pos, rot, parentRoot);
-                    go.transform.localScale = new Vector3(cellSize + 0.01f, 0.19881f, cellSize + 0.01f);
+                    //go.transform.localScale = new Vector3(cellSize + 0.01f, 0.19881f, cellSize + 0.01f);
                 }
             }
 

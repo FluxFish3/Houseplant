@@ -10,6 +10,7 @@ public class PlayerMovement : MonoBehaviour
 
     [Header("Movement Settings")]
     public float moveSpeed = 5f;
+    public float acceleration = 10f; // higher = more responsive
     public float sprintMultiplier = 1.8f;
 
     [Header("Speed Smoothing")]
@@ -35,10 +36,10 @@ public class PlayerMovement : MonoBehaviour
     public float staminaRegenDelay = 1.75f;
     private float regenDelayTimer;
 
-    private Vector2 moveInput;
+    public Vector2 moveInput;
     private bool isSprinting;
     private bool jumpPressed;
-    private bool isGrounded;
+    public bool isGrounded;
 
     private void Start()
     {
@@ -80,6 +81,7 @@ public class PlayerMovement : MonoBehaviour
         if (context.performed)
             jumpPressed = true;
     }
+
     private void MovePlayer()
     {
         Vector3 forward = camTransform.forward;
@@ -94,7 +96,13 @@ public class PlayerMovement : MonoBehaviour
         Vector3 moveDirection = forward * moveInput.y + right * moveInput.x;
 
         float currentSpeed = (isSprinting && stamina > 0f) ? moveSpeed * sprintMultiplier : moveSpeed;
-        rb.AddForce(moveDirection * currentSpeed, ForceMode.Force);
+
+        Vector3 targetVelocity = moveDirection * currentSpeed;
+        Vector3 flatVelocity = new Vector3(rb.linearVelocity.x, 0f, rb.linearVelocity.z);
+
+        Vector3 velocityChange = (targetVelocity - flatVelocity) * acceleration;
+
+        rb.AddForce(velocityChange, ForceMode.Force);
     }
 
     private void LimitSpeed()
