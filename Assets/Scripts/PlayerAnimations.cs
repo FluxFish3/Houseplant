@@ -43,9 +43,6 @@ public class PlayerAnimations : MonoBehaviour
     private void Update()
     {
         flatVel = new Vector2(pm.rb.linearVelocity.x, pm.rb.linearVelocity.z);
-
-        float relativeSpeed = flatVel.magnitude / pm.moveSpeed;
-
         bool isMoving = flatVel.magnitude > moveThreshhold && pm.isGrounded;
 
         if (isMoving)
