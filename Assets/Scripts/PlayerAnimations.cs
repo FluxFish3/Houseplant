@@ -30,14 +30,14 @@ public class PlayerAnimations : MonoBehaviour
 
     private void DoTilt()
     {
+        lastTiltDirection = nextTiltDirection;
+        nextTiltDirection *= -1;
+
         tiltTween?.Kill();
         tiltTween = transform.DOLocalRotate(
             new Vector3(0f, 0f, tiltAngle * nextTiltDirection),
             bounceDuration * 2
         ).SetEase(tiltEase);
-
-        lastTiltDirection = nextTiltDirection;
-        nextTiltDirection *= -1;
     }
 
     private void Update()
@@ -52,15 +52,18 @@ public class PlayerAnimations : MonoBehaviour
                 stepCount = 0;
 
                 // Determine initial tilt direction
-                if (Mathf.Abs(flatVel.x) > Mathf.Abs(flatVel.y))
+                if (Mathf.Abs(pm.moveInput.x) > Mathf.Abs(pm.moveInput.y))
                 {
-                    // Moving more horizontally (left/right)
+                    // Moving more horizontally (left/right) — keep existing behavior
                     nextTiltDirection = flatVel.x > 0 ? 1 : -1;
                 }
                 else
                 {
-                    // Moving more vertically (forward/backward) -> continue alternating
-                    nextTiltDirection = lastTiltDirection;
+                    // Moving more vertically (forward/backward) -> alternate immediately relative to last started tilt
+                    nextTiltDirection = -lastTiltDirection;
+                    // safety fallback (shouldn't be zero)
+                    if (nextTiltDirection == 0)
+                        nextTiltDirection = flatVel.y > 0 ? 1 : -1;
                 }
 
                 DoTilt();

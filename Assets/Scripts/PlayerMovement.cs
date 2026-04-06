@@ -1,7 +1,8 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using PurrNet; 
 
-public class PlayerMovement : MonoBehaviour
+public class PlayerMovement : NetworkBehaviour
 {
     [Header("References")]
     public Rigidbody rb;
@@ -12,6 +13,10 @@ public class PlayerMovement : MonoBehaviour
     public float moveSpeed = 5f;
     public float acceleration = 10f; // higher = more responsive
     public float sprintMultiplier = 1.8f;
+    public float fovMultiplier = 1.25f;
+
+    [Header("FOV")]
+    public float fovLerpSpeed = 8f;
 
     [Header("Speed Smoothing")]
     public float maxWalkSpeed = 10f;
@@ -41,11 +46,53 @@ public class PlayerMovement : MonoBehaviour
     private bool jumpPressed;
     public bool isGrounded;
 
-    private void Start()
+    // Camera FOV handling
+    private Camera cam;
+    private float baseFov;
+
+    protected override void OnSpawned(bool asServer)
     {
+        base.OnSpawned(asServer);
+        if (asServer) { return; }
+
+        rb.isKinematic = !isServer;
+
+        if (isOwner)
+        {
+            networkManager.onTick += OnTick; 
+        }
+        
+
         Cursor.visible = false;
         stamina = maxStamina;
         smoothedMaxSpeed = maxWalkSpeed;
+
+        // Resolve camera reference and base FOV
+        if (isOwner)
+            cam = Camera.main;
+
+        if (cam != null)
+            baseFov = cam.fieldOfView;
+        else
+            baseFov = 60f; // sensible default if no camera found
+
+        camTransform = cam.transform;
+        cam.GetComponent<FirstPersonCamera>().playerBody = transform;
+        cam.GetComponent<FirstPersonCamera>().camTarget = camTransform;
+        cam.GetComponent<FirstPersonCamera>().enabled = true;
+    }
+
+    protected override void OnDestroy()
+    {
+        base.OnDestroy(); 
+        networkManager.onTick -= OnTick;
+    }
+
+    private void OnTick(bool asServer)
+    {
+        if(asServer) { return; }
+        MovePlayer();
+        LimitSpeed();
     }
 
     private void Update()
@@ -59,12 +106,9 @@ public class PlayerMovement : MonoBehaviour
 
         HandleJump();
         HandleStamina();
-    }
 
-    private void FixedUpdate()
-    {
-        MovePlayer();
-        LimitSpeed();
+        // Smoothly update camera FOV each frame
+        UpdateFOV();
     }
     public void OnMove(InputAction.CallbackContext context)
     {
@@ -82,6 +126,7 @@ public class PlayerMovement : MonoBehaviour
             jumpPressed = true;
     }
 
+    [ServerRpc]
     private void MovePlayer()
     {
         Vector3 forward = camTransform.forward;
@@ -135,7 +180,7 @@ public class PlayerMovement : MonoBehaviour
             rb.AddForce(Vector3.up * jumpForce, ForceMode.Impulse);
 
             stamina -= jumpCost;
-            regenDelayTimer = staminaRegenDelay; 
+            regenDelayTimer = staminaRegenDelay;
             jumpCooldownTimer = jumpCooldown;
         }
 
@@ -172,5 +217,18 @@ public class PlayerMovement : MonoBehaviour
         }
 
         stamina = Mathf.Clamp(stamina, 0f, maxStamina);
+    }
+
+    // Smoothly blends camera FOV to sprint or base value
+    void UpdateFOV()
+    {
+        if (cam == null) return;
+
+        // Match sprint condition used for movement visuals
+        bool sprintActive = isSprinting && moveInput.magnitude > 0.1f && stamina > 0f;
+
+        float targetFov = sprintActive ? baseFov * fovMultiplier : baseFov;
+
+        cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, targetFov, fovLerpSpeed * Time.deltaTime);
     }
 }
