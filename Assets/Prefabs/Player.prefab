@@ -696,6 +696,7 @@ MonoBehaviour:
   rb: {fileID: 2332715099307024596}
   camTransform: {fileID: 0}
   groundCheck: {fileID: 799709272221693240}
+  cameraAnchor: {fileID: 0}
   moveSpeed: 3
   acceleration: 7
   sprintMultiplier: 1.7
@@ -709,7 +710,7 @@ MonoBehaviour:
     m_Bits: 4096
   jumpForce: 10
   jumpCooldown: 0.4
-  groundCheckRadius: 0.2
+  groundCheckRadius: 0.25
   maxStamina: 100
   stamina: 100
   sprintDrainPerSecond: 30

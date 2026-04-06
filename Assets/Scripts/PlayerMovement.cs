@@ -1,6 +1,6 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
-using PurrNet; 
+using PurrNet;
 
 public class PlayerMovement : NetworkBehaviour
 {
@@ -8,6 +8,8 @@ public class PlayerMovement : NetworkBehaviour
     public Rigidbody rb;
     public Transform camTransform;
     public Transform groundCheck;
+    [Tooltip("Optional. A child transform on the player used as the camera follow target (head/camera anchor). If empty we'll try to find a child named 'CamTarget'/'CameraTarget' or create one.")]
+    public Transform cameraAnchor;
 
     [Header("Movement Settings")]
     public float moveSpeed = 5f;
@@ -50,47 +52,90 @@ public class PlayerMovement : NetworkBehaviour
     private Camera cam;
     private float baseFov;
 
+    // Network rotation sync
+    private float syncedYRotation = 0f;
+    private float syncedXRotation = 0f;
+
     protected override void OnSpawned(bool asServer)
     {
         base.OnSpawned(asServer);
-        if (asServer) { return; }
 
+        // Ensure physics mode is correct for server vs clients
         rb.isKinematic = !isServer;
 
+        // Only local owner needs to hook tick and the main camera
         if (isOwner)
         {
-            networkManager.onTick += OnTick; 
-        }
-        
+            if (networkManager != null)
+                networkManager.onTick += OnTick;
 
-        Cursor.visible = false;
-        stamina = maxStamina;
-        smoothedMaxSpeed = maxWalkSpeed;
-
-        // Resolve camera reference and base FOV
-        if (isOwner)
+            // Try to find local camera
             cam = Camera.main;
+            if (cam != null)
+            {
+                // this is the camera transform used by movement (movement is camera-relative)
+                camTransform = cam.transform;
+                baseFov = cam.fieldOfView;
 
-        if (cam != null)
-            baseFov = cam.fieldOfView;
+                // Configure the FirstPersonCamera instance on the main camera
+                FirstPersonCamera fpCam = cam.GetComponent<FirstPersonCamera>();
+                if (fpCam != null)
+                {
+                    // Link player body so camera can rotate the player
+                    fpCam.playerBody = transform;
+                    fpCam.ownerMovement = this;
+
+                    // Determine a proper camTarget on the player:
+                    // prefer `cameraAnchor` set on the prefab, else try child names, else create a child anchor at a reasonable head height.
+                    Transform target = cameraAnchor;
+                    if (target == null)
+                    {
+                        target = transform.Find("CamTarget") ?? transform.Find("CameraTarget");
+                        if (target == null)
+                        {
+                            GameObject go = new GameObject("CamTarget");
+                            go.transform.SetParent(transform, false);
+                            go.transform.localPosition = new Vector3(0f, 1.6f, 0f); // default head height
+                            target = go.transform;
+                            cameraAnchor = target;
+                        }
+                    }
+
+                    fpCam.camTarget = target;
+
+                    // Only enable first-person camera controls for the local owner.
+                    fpCam.enabled = true;
+                }
+            }
+            else
+            {
+                baseFov = 60f; // fallback
+            }
+
+            Cursor.visible = false;
+            stamina = maxStamina;
+            smoothedMaxSpeed = maxWalkSpeed;
+        }
         else
-            baseFov = 60f; // sensible default if no camera found
-
-        camTransform = cam.transform;
-        cam.GetComponent<FirstPersonCamera>().playerBody = transform;
-        cam.GetComponent<FirstPersonCamera>().camTarget = camTransform;
-        cam.GetComponent<FirstPersonCamera>().enabled = true;
+        {
+            // For non-owners, try to discover a cameraAnchor on the prefab so remote camera-targeting (if needed) is present.
+            if (cameraAnchor == null)
+            {
+                cameraAnchor = transform.Find("CamTarget") ?? transform.Find("CameraTarget");
+            }
+        }
     }
 
     protected override void OnDestroy()
     {
-        base.OnDestroy(); 
-        networkManager.onTick -= OnTick;
+        base.OnDestroy();
+        if (isOwner && networkManager != null)
+            networkManager.onTick -= OnTick;
     }
 
     private void OnTick(bool asServer)
     {
-        if(asServer) { return; }
+        if (asServer) { return; }
         MovePlayer();
         LimitSpeed();
     }
@@ -107,8 +152,13 @@ public class PlayerMovement : NetworkBehaviour
         HandleJump();
         HandleStamina();
 
-        // Smoothly update camera FOV each frame
+        // Smoothly update camera FOV each frame (only for owner)
         UpdateFOV();
+    }
+
+    private void OnDrawGizmosSelected()
+    {
+        Gizmos.DrawWireSphere(groundCheck.position, groundCheckRadius);
     }
     public void OnMove(InputAction.CallbackContext context)
     {
@@ -126,9 +176,18 @@ public class PlayerMovement : NetworkBehaviour
             jumpPressed = true;
     }
 
+    public void OnLook(InputAction.CallbackContext context)
+    {
+        // This is handled by FirstPersonCamera, but we need to implement it here to receive the input callback and mark it as used.
+        cam.GetComponent<FirstPersonCamera>().OnLook(context); 
+    }
+
     [ServerRpc]
     private void MovePlayer()
     {
+        // camTransform must be set on the owner (movement uses camera-relative directions)
+        if (camTransform == null) return;
+
         Vector3 forward = camTransform.forward;
         Vector3 right = camTransform.right;
 
@@ -222,7 +281,7 @@ public class PlayerMovement : NetworkBehaviour
     // Smoothly blends camera FOV to sprint or base value
     void UpdateFOV()
     {
-        if (cam == null) return;
+        if (!isOwner || cam == null) return;
 
         // Match sprint condition used for movement visuals
         bool sprintActive = isSprinting && moveInput.magnitude > 0.1f && stamina > 0f;
@@ -230,5 +289,51 @@ public class PlayerMovement : NetworkBehaviour
         float targetFov = sprintActive ? baseFov * fovMultiplier : baseFov;
 
         cam.fieldOfView = Mathf.Lerp(cam.fieldOfView, targetFov, fovLerpSpeed * Time.deltaTime);
+    }
+
+    /// <summary>
+    /// Called by FirstPersonCamera to sync local player rotation to the network.
+    /// </summary>
+    public void SetLocalRotation(float xRotation, float yRotation)
+    {
+        syncedXRotation = xRotation;
+        syncedYRotation = yRotation;
+        transform.rotation = Quaternion.Euler(0f, yRotation, 0f);
+        SyncRotationToServer(xRotation, yRotation);
+    }
+
+    [ServerRpc]
+    private void SyncRotationToServer(float xRotation, float yRotation)
+    {
+        syncedXRotation = xRotation;
+        syncedYRotation = yRotation;
+        transform.rotation = Quaternion.Euler(0f, yRotation, 0f);
+        SyncRotationToClients(xRotation, yRotation);
+    }
+
+    [ObserversRpc]
+    private void SyncRotationToClients(float xRotation, float yRotation)
+    {
+        if (isOwner) return; // Owner controls their own rotation via camera
+
+        syncedXRotation = xRotation;
+        syncedYRotation = yRotation;
+        transform.rotation = Quaternion.Euler(0f, yRotation, 0f);
+    }
+
+    /// <summary>
+    /// Get the synced Y rotation for remote players.
+    /// </summary>
+    public float GetSyncedYRotation()
+    {
+        return syncedYRotation;
+    }
+
+    /// <summary>
+    /// Get the synced X rotation for remote players.
+    /// </summary>
+    public float GetSyncedXRotation()
+    {
+        return syncedXRotation;
     }
 }
