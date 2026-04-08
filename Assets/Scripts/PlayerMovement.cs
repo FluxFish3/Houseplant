@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.InputSystem;
 using PurrNet;
 
@@ -16,6 +17,8 @@ public class PlayerMovement : NetworkBehaviour
     public float acceleration = 10f; // higher = more responsive
     public float sprintMultiplier = 1.8f;
     public float fovMultiplier = 1.25f;
+
+    private bool isLocked = false;
 
     [Header("FOV")]
     public float fovLerpSpeed = 8f;
@@ -42,6 +45,24 @@ public class PlayerMovement : NetworkBehaviour
     public float staminaRegenPerSecond = 10f;
     public float staminaRegenDelay = 1.75f;
     private float regenDelayTimer;
+    private Image staminaBar;
+    public float staminaBarSmooth;
+
+    [Header("Crouch")]
+    [Tooltip("The transform that represents the player's visual mesh/root to shift down when crouching.")]
+    public Transform meshRoot;
+    [Tooltip("GameObject (e.g. feet) to hide when crouched.")]
+    public GameObject feetObject;
+    [Tooltip("Vertical amount (in local space) to shift the mesh down when crouching.")]
+    public float crouchHeight = 0.5f;
+    [Tooltip("Time (seconds) used by SmoothDamp to interpolate the mesh shift.")]
+    public float crouchSmoothTime = 0.12f;
+    public bool startCrouched = false;
+
+    private Vector3 meshOriginalLocalPos = Vector3.zero;
+    private Vector3 meshTargetLocalPos = Vector3.zero;
+    private Vector3 meshVelocity = Vector3.zero;
+    private bool isCrouching = false;
 
     public Vector2 moveInput;
     private bool isSprinting;
@@ -62,6 +83,32 @@ public class PlayerMovement : NetworkBehaviour
 
         // Ensure physics mode is correct for server vs clients
         rb.isKinematic = !isServer;
+
+        // Discover meshRoot if not explicitly assigned (common cases)
+        if (meshRoot == null)
+        {
+            var smr = GetComponentInChildren<SkinnedMeshRenderer>();
+            if (smr != null)
+                meshRoot = smr.transform;
+            else
+            {
+                var mr = GetComponentInChildren<MeshRenderer>();
+                if (mr != null)
+                    meshRoot = mr.transform;
+            }
+        }
+
+        // Cache original local position to use as the uncloached baseline
+        if (meshRoot != null)
+        {
+            meshOriginalLocalPos = meshRoot.localPosition;
+            meshTargetLocalPos = meshOriginalLocalPos;
+        }
+
+        // Ensure feet object initial visibility matches startCrouched
+        isCrouching = startCrouched;
+        if (feetObject != null)
+            feetObject.SetActive(!isCrouching);
 
         // Only local owner needs to hook tick and the main camera
         if (isOwner)
@@ -115,6 +162,8 @@ public class PlayerMovement : NetworkBehaviour
             Cursor.visible = false;
             stamina = maxStamina;
             smoothedMaxSpeed = maxWalkSpeed;
+            isLocked = false;
+            staminaBar = FindObjectOfType<Canvas>()?.transform.Find("StaminaBar")?.GetComponent<Image>();
         }
         else
         {
@@ -124,6 +173,11 @@ public class PlayerMovement : NetworkBehaviour
                 cameraAnchor = transform.Find("CamTarget") ?? transform.Find("CameraTarget");
             }
         }
+
+        // Apply initial crouch position if starting crouched
+        UpdateTargetMeshPosition();
+        if (meshRoot != null)
+            meshRoot.localPosition = meshTargetLocalPos;
     }
 
     protected override void OnDestroy()
@@ -154,24 +208,48 @@ public class PlayerMovement : NetworkBehaviour
 
         // Smoothly update camera FOV each frame (only for owner)
         UpdateFOV();
+
+        // Smoothly move mesh root toward target local position (visual crouch)
+        if (meshRoot != null)
+        {
+            meshRoot.localPosition = Vector3.SmoothDamp(meshRoot.localPosition, meshTargetLocalPos, ref meshVelocity, Mathf.Max(0.001f, crouchSmoothTime));
+        }
     }
 
     private void OnDrawGizmosSelected()
     {
         Gizmos.DrawWireSphere(groundCheck.position, groundCheckRadius);
     }
+
     public void OnMove(InputAction.CallbackContext context)
     {
+        // If locked, ignore input updates (keep inputs at zero).
+        if (isLocked)
+        {
+            moveInput = Vector2.zero;
+            return;
+        }
+
         moveInput = context.ReadValue<Vector2>();
     }
 
     public void OnSprint(InputAction.CallbackContext context)
     {
+        if (isLocked)
+        {
+            isSprinting = false;
+            return;
+        }
         isSprinting = context.ReadValueAsButton();
     }
 
     public void OnJump(InputAction.CallbackContext context)
     {
+        if (isLocked)
+        {
+            jumpPressed = false;
+            return;
+        }
         if (context.performed)
             jumpPressed = true;
     }
@@ -180,6 +258,132 @@ public class PlayerMovement : NetworkBehaviour
     {
         // This is handled by FirstPersonCamera, but we need to implement it here to receive the input callback and mark it as used.
         cam.GetComponent<FirstPersonCamera>().OnLook(context); 
+    }
+
+    public void OnLock(InputAction.CallbackContext context)
+    {
+        if (context.performed)
+        {
+            isLocked = !isLocked;
+
+            // When locking, immediately clear all movement inputs
+            if (isLocked)
+            {
+                moveInput = Vector2.zero;
+                isSprinting = false;
+                jumpPressed = false;
+                SetLocalCrouch(true); 
+            }
+            else
+            {
+                // When unlocking, sample the current device state so movement resumes
+                // if the player is still holding move keys / stick.
+                moveInput = SampleCurrentMoveInput();
+                isSprinting = SampleCurrentSprintInput();
+                SetLocalCrouch(false); 
+                // Intentionally do not auto-trigger jumpPressed on unlock to avoid accidental jumps.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Samples current devices (keyboard + gamepad left stick) to produce a movement Vector2.
+    /// Returns a normalized vector when magnitude > 1 to mimic joystick/axis behavior.
+    /// </summary>
+    private Vector2 SampleCurrentMoveInput()
+    {
+        Vector2 sampled = Vector2.zero;
+
+        // Gamepad left stick has higher priority if present
+        var gp = Gamepad.current;
+        if (gp != null)
+        {
+            sampled = gp.leftStick.ReadValue();
+        }
+
+        // Keyboard fallback/augmentation (WASD / arrows)
+        var kb = Keyboard.current;
+        if (kb != null)
+        {
+            if (kb.wKey.isPressed || kb.upArrowKey.isPressed) sampled.y += 1f;
+            if (kb.sKey.isPressed || kb.downArrowKey.isPressed) sampled.y -= 1f;
+            if (kb.aKey.isPressed || kb.leftArrowKey.isPressed) sampled.x -= 1f;
+            if (kb.dKey.isPressed || kb.rightArrowKey.isPressed) sampled.x += 1f;
+        }
+
+        // Clamp length to 1 (in case keyboard + stick both add up)
+        if (sampled.sqrMagnitude > 1f)
+            sampled.Normalize();
+
+        return sampled;
+    }
+
+    /// <summary>
+    /// Samples current devices to determine sprint state (Shift on keyboard or shoulder on gamepad).
+    /// </summary>
+    private bool SampleCurrentSprintInput()
+    {
+        var kb = Keyboard.current;
+        if (kb != null && (kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed))
+            return true;
+
+        var gp = Gamepad.current;
+        if (gp != null && (gp.leftShoulder.isPressed || gp.rightShoulder.isPressed))
+            return true;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Locally set crouch state and notify server to replicate to observers.
+    /// </summary>
+    private void SetLocalCrouch(bool crouch)
+    {
+        if (isCrouching == crouch) return;
+
+        isCrouching = crouch;
+
+        // Hide feet locally immediately
+        if (feetObject != null)
+            feetObject.SetActive(!isCrouching);
+
+        // Update mesh target
+        UpdateTargetMeshPosition();
+
+        // Propagate to server/others
+        SyncCrouchToServer(isCrouching);
+    }
+
+    private void UpdateTargetMeshPosition()
+    {
+        if (meshRoot == null) return;
+
+        meshTargetLocalPos = meshOriginalLocalPos + (isCrouching ? Vector3.down * crouchHeight : Vector3.zero);
+    }
+
+    [ServerRpc]
+    private void SyncCrouchToServer(bool crouch)
+    {
+        // Apply on server instance
+        isCrouching = crouch;
+        if (feetObject != null)
+            feetObject.SetActive(!isCrouching);
+        UpdateTargetMeshPosition();
+
+        // Broadcast to observers
+        SyncCrouchToClients(crouch);
+    }
+
+    [ObserversRpc]
+    private void SyncCrouchToClients(bool crouch)
+    {
+        // Owners already applied locally; observers should apply now.
+        if (isOwner) return;
+
+        isCrouching = crouch;
+        if (feetObject != null)
+            feetObject.SetActive(!isCrouching);
+        UpdateTargetMeshPosition();
     }
 
     [ServerRpc]
@@ -276,6 +480,8 @@ public class PlayerMovement : NetworkBehaviour
         }
 
         stamina = Mathf.Clamp(stamina, 0f, maxStamina);
+        if (staminaBar != null)
+            staminaBar.fillAmount = Mathf.Lerp(staminaBar.fillAmount, stamina / maxStamina, staminaBarSmooth * Time.deltaTime);
     }
 
     // Smoothly blends camera FOV to sprint or base value

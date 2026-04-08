@@ -1,5 +1,12 @@
 fileFormatVersion: 2
 guid: 332e746c3c3253246aacad4d5559f1fb
+AssetOrigin:
+  serializedVersion: 1
+  productId: 297320
+  packageName: 'PurrNet: Multiplayer Networking'
+  packageVersion: v1.19.0
+  assetPath: Assets/PurrNet/Runtime/Transports/PurrTransport.cs
+  uploadId: 869676
 MonoImporter:
   externalObjects: {}
   serializedVersion: 2
@@ -9,10 +16,3 @@ MonoImporter:
   userData: 
   assetBundleName: 
   assetBundleVariant: 
-AssetOrigin:
-  serializedVersion: 1
-  productId: 297320
-  packageName: 'PurrNet: Multiplayer Networking'
-  packageVersion: v1.19.0
-  assetPath: Assets/PurrNet/Runtime/Transports/PurrTransport.cs
-  uploadId: 869676
